@@ -32,50 +32,64 @@ For Windows, you can run the `.exe` file directly.
 
 ## Usage
 
-The primary use of this tool is to search for vehicles and view their tax assessment details.
+The primary use of this tool is to search for vehicles and view their tax assessment details. Here are some examples:
 
-### 1. Basic Search: Find a vehicle by make and model
+### 1. Basic Search for a Common Car
 
-This is the most common use case. It will list all vehicles matching the specified make and model.
+This searches for an older, high-volume car. The `-list` flag displays a summary table of matching vehicles, and `-tax-list` shows a detailed tax breakdown for the first result found. The `-assessment=3y` flag widens the search to the last 3 years to increase the chances of a match.
 
 ```sh
-gh-duty-checker -make "TOYOTA" -model "CAMRY"
+gh-duty-checker -make="Toyota" -model="Camry" -year=2019 -list -tax-list -assessment=3y
 ```
 
-### 2. Search with a Specific Year
+### 2. Search for a Popular SUV (Case-Insensitive)
 
-You can narrow down your search by specifying the year of manufacture.
+This example demonstrates that the tool correctly handles lowercase make names. It searches for a recent popular SUV.
 
 ```sh
-gh-duty-checker -make "TOYOTA" -model "CAMRY" -year "2019"
+gh-duty-checker -make="toyota" -model="RAV4" -year=2022 -list -assessment=2y
 ```
 
-### 3. Search within a Date Range
+### 3. Get Only the Tax Breakdown for a Luxury Car
 
-If you want to see vehicles assessed within a specific period, you can use the `-start-date` and `-end-date` flags. The date format is `YYYY-MM-DD`.
+If you only want the detailed tax breakdown without seeing the summary list, you can omit the `-list` flag.
 
 ```sh
-gh-duty-checker -make "HONDA" -model "ACCORD" -start-date "2023-01-01" -end-date "2023-03-31"
+gh-duty-checker -make="Mercedes-Benz" -model="E-Class" -year=2021 -tax-list -assessment=2y
 ```
 
-### 4. Get Detailed Tax Breakdown for a Specific Vehicle
+### 4. Search for a Vehicle with a Multi-Word Name
 
-After running a search, the results will include a `No.` for each vehicle. Use this number with the `-detail` flag to get a complete breakdown of the taxes and duties.
+This example shows that spaces in both the make ("Land Rover") and model ("Range Rover") are handled correctly.
 
-First, run a search:
 ```sh
-gh-duty-checker -make "KIA" -model "SPORTAGE" -year 2020
+gh-duty-checker -make="Land Rover" -model="Range Rover" -year=2022 -list -tax-list -assessment=2y
 ```
 
-From the output, pick a `No.` (e.g., `1`) and run:
+### 5. Search within a Narrow Date Range
+
+This example uses a shorter assessment window (`90d`). The tool will either show the results or correctly report that no data was found, which is expected behavior for narrow date ranges.
+
 ```sh
-gh-duty-checker -make "KIA" -model "SPORTAGE" -year 2020 -detail 1
+gh-duty-checker -make="Honda" -model="Civic" -year=2023 -list -assessment=90d
 ```
 
-### 5. Debugging Network Requests
+### All Available Flags
 
-If you are facing issues or want to inspect the raw requests and responses, you can use the `-debug` flag.
-
-```sh
-gh-duty-checker -make "TOYOTA" -model "RAV4" -debug
+```
+Usage of gh-duty-checker:
+  -assessment string
+    	Assessment date range (e.g., 4d, 2w, 3m, 1y). '1d' for today only. (default "3m")
+  -debug
+    	Enable debug logging to print request details.
+  -list
+    	Display the list of matching vehicles and their total tax.
+  -make string
+    	Make of the car (e.g., 'Tesla')
+  -model string
+    	Model of the car (e.g., 'Model X')
+  -tax-list
+    	Display the detailed tax breakdown for the most recent vehicle found.
+  -year string
+    	Year of manufacture (default "2024")
 ``` 
