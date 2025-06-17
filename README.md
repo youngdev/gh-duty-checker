@@ -4,6 +4,10 @@
 
 ## Installation
 
+There are two ways to install `gh-duty-checker`.
+
+### Option 1: Using `go install` (Recommended)
+
 To install `gh-duty-checker`, you need to have Go installed on your system. Then, you can use `go install` to install it directly from the GitHub repository:
 
 ```sh
@@ -11,6 +15,20 @@ go install github.com/youngdev/gh-duty-checker@latest
 ```
 
 This will download, compile, and install the binary to your Go bin directory (`$GOPATH/bin`).
+
+### Option 2: Manual Installation from Binaries
+
+You can also download pre-compiled binaries from the `bin/` directory in this repository or from the [Releases](https://github.com/youngdev/gh-duty-checker/releases) page. Download the appropriate binary for your operating system (Darwin for macOS, Windows), make it executable, and move it to a directory in your `PATH`.
+
+For macOS:
+```sh
+# For AMD64
+chmod +x gh-duty-checker-darwin-amd64-v1.0.0
+# For ARM64
+chmod +x gh-duty-checker-darwin-arm64-v1.0.0
+```
+
+For Windows, you can run the `.exe` file directly.
 
 ## Usage
 
