@@ -159,12 +159,18 @@ func (c *Client) SearchVehicles(makeName, makeCode, modelName, modelCode, year, 
 	detailRe := regexp.MustCompile(`goDetail\('([^']*)', '([^']*)', '([^']*)', '([^']*)', '([^']*)'`)
 
 	doc.Find("table[data-table='rwd'] tbody tr").Each(func(i int, s *goquery.Selection) {
-		if s.Find("td").Length() < 10 { return }
-		if strings.Contains(s.Text(), "No data found") { return }
+		if s.Find("td").Length() < 10 {
+			return
+		}
+		if strings.Contains(s.Text(), "No data found") {
+			return
+		}
 
 		href, _ := s.Find("td:nth-child(2) a").Attr("href")
 		detailMatches := detailRe.FindStringSubmatch(href)
-		if len(detailMatches) < 6 { return }
+		if len(detailMatches) < 6 {
+			return
+		}
 
 		results = append(results, VehicleResult{
 			No:             strings.TrimSpace(s.Find("td:nth-child(1)").Text()),
@@ -197,11 +203,15 @@ func (c *Client) GetTaxDetails(params DetailParams) ([]TaxItem, error) {
 		"itemNo":           {params.ItemNo},
 	}
 	doc, err := c.postFormAndGetDoc(usedVehicleDetailURL, formData, "")
-	if err != nil { return nil, err }
+	if err != nil {
+		return nil, err
+	}
 
 	var taxItems []TaxItem
 	doc.Find("tbody tr").Each(func(i int, s *goquery.Selection) {
-		if s.Find("td").Length() < 5 { return }
+		if s.Find("td").Length() < 5 {
+			return
+		}
 		taxItems = append(taxItems, TaxItem{
 			No:          strings.TrimSpace(s.Find("td:nth-child(1)").Text()),
 			TaxCode:     strings.TrimSpace(s.Find("td:nth-child(2)").Text()),
@@ -225,7 +235,7 @@ func (c *Client) postFormAndGetDoc(reqURL string, data url.Values, rawBody strin
 		bodyReader = strings.NewReader(encodedData)
 		bodyToLog = encodedData
 	}
-	
+
 	if isDebug {
 		fmt.Println("------------------------------------------------------")
 		fmt.Printf("DEBUG: Sending POST request to: %s\n", reqURL)
@@ -239,15 +249,19 @@ func (c *Client) postFormAndGetDoc(reqURL string, data url.Values, rawBody strin
 	}
 
 	req, err := http.NewRequest("POST", reqURL, bodyReader)
-	if err != nil { return nil, err }
-	
+	if err != nil {
+		return nil, err
+	}
+
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("User-Agent", userAgent)
 	req.Header.Set("Origin", baseURL)
 	req.Header.Set("Referer", usedVehicleSearchURL)
 
 	res, err := c.httpClient.Do(req)
-	if err != nil { return nil, err }
+	if err != nil {
+		return nil, err
+	}
 	defer res.Body.Close()
 
 	if res.StatusCode != http.StatusOK {
@@ -256,12 +270,16 @@ func (c *Client) postFormAndGetDoc(reqURL string, data url.Values, rawBody strin
 	}
 
 	doc, err := goquery.NewDocumentFromReader(res.Body)
-	if err != nil { return nil, err }
+	if err != nil {
+		return nil, err
+	}
 	return doc, nil
 }
 
 func parseAssessment(durationStr string) (string, string, error) {
-	if durationStr == "" { durationStr = "3m" }
+	if durationStr == "" {
+		durationStr = "3m"
+	}
 	endDate := time.Now()
 	if durationStr == "1d" {
 		dateStr := endDate.Format("02/01/2006")
@@ -277,10 +295,14 @@ func parseAssessment(durationStr string) (string, string, error) {
 	unit := matches[2]
 	var startDate time.Time
 	switch unit {
-	case "d": startDate = endDate.AddDate(0, 0, -val)
-	case "w": startDate = endDate.AddDate(0, 0, -val*7)
-	case "m": startDate = endDate.AddDate(0, -val, 0)
-	case "y": startDate = endDate.AddDate(-val, 0, 0)
+	case "d":
+		startDate = endDate.AddDate(0, 0, -val)
+	case "w":
+		startDate = endDate.AddDate(0, 0, -val*7)
+	case "m":
+		startDate = endDate.AddDate(0, -val, 0)
+	case "y":
+		startDate = endDate.AddDate(-val, 0, 0)
 	}
 	startDateStr := startDate.Format("02/01/2006")
 	return startDateStr, endDateStr, nil
@@ -330,17 +352,25 @@ func main() {
 
 	fmt.Printf("Fetching codes for %s %s...\n", *makeFlag, *modelFlag)
 	makeCode, err := client.GetMakeCode(*makeFlag)
-	if err != nil { log.Fatalf("Error getting make code: %v", err) }
+	if err != nil {
+		log.Fatalf("Error getting make code: %v", err)
+	}
 	modelCode, err := client.GetModelCode(*makeFlag, makeCode, *modelFlag)
-	if err != nil { log.Fatalf("Error getting model code: %v", err) }
+	if err != nil {
+		log.Fatalf("Error getting model code: %v", err)
+	}
 	fmt.Printf("-> Found Make Code: %s, Model Code: %s\n", makeCode, modelCode)
 
 	startDate, endDate, err := parseAssessment(*assessmentFlag)
-	if err != nil { log.Fatalf("Error parsing assessment date: %v", err) }
+	if err != nil {
+		log.Fatalf("Error parsing assessment date: %v", err)
+	}
 
 	fmt.Printf("Searching for vehicles from %s to %s...\n", startDate, endDate)
 	results, err := client.SearchVehicles(*makeFlag, makeCode, *modelFlag, modelCode, *yearFlag, startDate, endDate)
-	if err != nil { log.Fatalf("Error searching for vehicles: %v", err) }
+	if err != nil {
+		log.Fatalf("Error searching for vehicles: %v", err)
+	}
 
 	if len(results) == 0 {
 		fmt.Println("No data found for the specified criteria.")
@@ -359,7 +389,9 @@ func main() {
 		mostRecent := results[0]
 		fmt.Printf("Fetching tax details for %s %s (Trim: %s)...\n", mostRecent.Make, mostRecent.Model, mostRecent.TrimLevel)
 		taxItems, err := client.GetTaxDetails(mostRecent.DetailParams)
-		if err != nil { log.Fatalf("Error getting tax details: %v", err) }
+		if err != nil {
+			log.Fatalf("Error getting tax details: %v", err)
+		}
 		if len(taxItems) == 0 {
 			fmt.Println("Could not retrieve detailed tax breakdown.")
 		} else {
