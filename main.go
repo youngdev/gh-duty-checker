@@ -127,15 +127,13 @@ func (c *Client) GetModelCode(makeName, makeCode, modelName string) (string, err
 }
 
 func (c *Client) SearchVehicles(makeName, makeCode, modelName, modelCode, year, startDate, endDate string) ([]VehicleResult, error) {
-	// FINAL FIX: Manually build the request body to enforce the exact parameter order
-	// observed in the HAR file. The server is fragile and requires this specific order.
 	listOpJSON := `{"searchEndApprovalDate":null,"miv_pageNo":"1","searchChassisNo":null,"searchStartApprovalDate":null,"searchType":null,"miv_start_index":"0","searchMakeCd":null,"searchMakeNm":null,"searchManufactureYear":null,"miv_end_index":"10","searchModelTypeNm":null,"miv_sort":"","miv_pageSize":"10","searchModelTypeCd":null}`
 	encodedListOp := url.QueryEscape(url.QueryEscape(listOpJSON))
 
 	orderedParams := []string{
 		"screenType=" + url.QueryEscape("S"),
 		"MENU_ID=" + url.QueryEscape("IIM01S03V02"),
-		"LISTOP=" + encodedListOp, // This value is already encoded, no need to escape it again
+		"LISTOP=" + encodedListOp,
 		"searchType=" + url.QueryEscape("02"),
 		"searchChassisNo=" + url.QueryEscape(""),
 		"searchMakeCd=" + url.QueryEscape(makeCode),

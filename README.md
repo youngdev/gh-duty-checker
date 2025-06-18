@@ -92,4 +92,7 @@ Usage of gh-duty-checker:
     	Display the detailed tax breakdown for the most recent vehicle found.
   -year string
     	Year of manufacture (default "2024")
-``` 
+```
+
+### TODO
+- Figure out a way to fetch all for a day without make & model selection?
