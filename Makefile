@@ -1,6 +1,6 @@
 BINARY_NAME=gh-duty-checker
 SRC=main.go
-VERSION=v1.0.0
+VERSION=v1.1.0
 
 build:
 	@echo "Building for $(GOOS)/$(GOARCH)..."

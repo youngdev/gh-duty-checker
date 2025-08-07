@@ -30,9 +30,19 @@ chmod +x gh-duty-checker-darwin-arm64-v1.0.0
 
 For Windows, you can run the `.exe` file directly.
 
+## Prerequisites for AI Feature
+
+To use the AI feature, you need a Gemini API key:
+
+1. Get your API key from [Google AI Studio](https://aistudio.google.com/app/apikey)
+2. Set it as an environment variable:
+   ```sh
+   export GEMINI_API_KEY="your-api-key-here"
+   ```
+
 ## Usage
 
-The primary use of this tool is to search for vehicles and view their tax assessment details. Here are some examples:
+The primary use of this tool is to search for vehicles and view their tax assessment details. You can use it with traditional flags or with the new AI-powered natural language interface.
 
 ### 1. Basic Search for a Common Car
 
@@ -74,10 +84,39 @@ This example uses a shorter assessment window (`90d`). The tool will either show
 gh-duty-checker -make="Honda" -model="Civic" -year=2023 -list -assessment=90d
 ```
 
+### 6. Using AI to Interpret Natural Language Queries
+
+The new AI feature allows you to ask questions in natural language. The AI will automatically:
+- Extract the vehicle make and model from your query
+- Search for duty information for the past 10 years
+- Provide a comprehensive analysis of the results
+
+```sh
+# Example 1: Ask about luxury vehicles
+gh-duty-checker -ai "what are the duty rates people paying for Lamborghini Urus"
+
+# Example 2: Simple query
+gh-duty-checker -ai "How much duty for BMW X5?"
+
+# Example 3: Conversational query
+gh-duty-checker -ai "I'm thinking of importing a Mercedes G-Wagon, what are the typical duties?"
+```
+
+The AI will:
+1. Identify the make and model from your question
+2. Search external.unipassghana.com for the past 10 years (from current year)
+3. Analyze all the results and provide insights on:
+   - Duty rate trends over the years
+   - Notable patterns or changes
+   - Exchange rate impacts
+   - Total tax summaries
+
 ### All Available Flags
 
 ```
 Usage of gh-duty-checker:
+  -ai string
+    	Use AI to interpret natural language query (e.g., 'what are the duty rates people paying for Lamborghini Urus')
   -assessment string
     	Assessment date range (e.g., 4d, 2w, 3m, 1y). '1d' for today only. (default "3m")
   -debug
@@ -93,6 +132,15 @@ Usage of gh-duty-checker:
   -year string
     	Year of manufacture (default "2024")
 ```
+
+### Note on AI Usage
+
+When using the `-ai` flag:
+- The AI uses Google's Gemini 2.5 Pro model
+- It automatically searches for the past 10 years of data
+- Each year search covers a 5-year assessment period
+- Results are analyzed and presented in a conversational format
+- Make sure your GEMINI_API_KEY environment variable is set
 
 ### TODO
 - Figure out a way to fetch all for a day without make & model selection?

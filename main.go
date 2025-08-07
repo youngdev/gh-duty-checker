@@ -2,6 +2,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"io"
@@ -16,6 +17,7 @@ import (
 
 	"github.com/PuerkitoBio/goquery"
 	"github.com/olekukonko/tablewriter"
+	"google.golang.org/genai"
 )
 
 var isDebug bool
@@ -331,9 +333,15 @@ func main() {
 	listFlag := flag.Bool("list", false, "Display the list of matching vehicles and their total tax.")
 	taxListFlag := flag.Bool("tax-list", false, "Display the detailed tax breakdown for the most recent vehicle found.")
 	debugFlag := flag.Bool("debug", false, "Enable debug logging to print request details.")
+	aiFlag := flag.String("ai", "", "Use AI to interpret natural language query (e.g., 'what are the duty rates people paying for Lamborghini Urus')")
 
 	flag.Parse()
 	isDebug = *debugFlag
+
+	if *aiFlag != "" {
+		handleAIQuery(*aiFlag)
+		return
+	}
 
 	if *makeFlag == "" || *modelFlag == "" {
 		fmt.Println("Error: -make and -model flags are required.")
@@ -396,4 +404,183 @@ func main() {
 			displayTaxList(taxItems)
 		}
 	}
+}
+
+func handleAIQuery(query string) {
+	apiKey := os.Getenv("GEMINI_API_KEY")
+	if apiKey == "" {
+		log.Fatal("Error: GEMINI_API_KEY environment variable is not set")
+	}
+
+	ctx := context.Background()
+
+	client, err := genai.NewClient(ctx, &genai.ClientConfig{
+		APIKey:  apiKey,
+		Backend: genai.BackendGeminiAPI,
+	})
+	if err != nil {
+		log.Fatalf("Error creating Gemini client: %v", err)
+	}
+
+	fmt.Println("Analyzing your query...")
+	make, model, err := extractMakeModel(ctx, client, query)
+	if err != nil {
+		log.Fatalf("Error extracting vehicle information: %v", err)
+	}
+
+	fmt.Printf("Detected: Make=%s, Model=%s\n", make, model)
+	fmt.Println("Searching for duty information...")
+
+	allResults, err := performMultiYearSearch(make, model)
+	if err != nil {
+		log.Fatalf("Error performing search: %v", err)
+	}
+
+	fmt.Println("\nGenerating AI response...")
+	response, err := generateAIResponse(ctx, client, query, allResults)
+	if err != nil {
+		log.Fatalf("Error generating AI response: %v", err)
+	}
+
+	fmt.Println("\n" + strings.Repeat("=", 80))
+	fmt.Println("AI Response:")
+	fmt.Println(strings.Repeat("=", 80))
+	fmt.Println(response)
+}
+
+func extractMakeModel(ctx context.Context, client *genai.Client, query string) (string, string, error) {
+	prompt := fmt.Sprintf(`Extract the car make and model from this query: "%s"
+
+Return ONLY in this format:
+MAKE: [make name]
+MODEL: [model name]
+
+If you cannot determine the make or model, return:
+MAKE: unknown
+MODEL: unknown
+
+Examples:
+Query: "what are the duty rates people paying for Lamborghini Urus"
+MAKE: Lamborghini
+MODEL: Urus
+
+Query: "Toyota Camry duties"
+MAKE: Toyota
+MODEL: Camry`, query)
+
+	parts := []*genai.Part{
+		{Text: prompt},
+	}
+
+	result, err := client.Models.GenerateContent(ctx, "gemini-2.5-pro", []*genai.Content{{Parts: parts}}, nil)
+	if err != nil {
+		return "", "", err
+	}
+
+	if len(result.Candidates) == 0 || len(result.Candidates[0].Content.Parts) == 0 {
+		return "", "", fmt.Errorf("no response from AI")
+	}
+
+	responseText := result.Candidates[0].Content.Parts[0].Text
+
+	lines := strings.Split(responseText, "\n")
+	var make, model string
+
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "MAKE:") {
+			make = strings.TrimSpace(strings.TrimPrefix(line, "MAKE:"))
+		} else if strings.HasPrefix(line, "MODEL:") {
+			model = strings.TrimSpace(strings.TrimPrefix(line, "MODEL:"))
+		}
+	}
+
+	if make == "unknown" || model == "unknown" || make == "" || model == "" {
+		return "", "", fmt.Errorf("could not extract make and model from query")
+	}
+
+	return make, model, nil
+}
+
+func performMultiYearSearch(make, model string) (string, error) {
+	client := NewClient()
+
+	makeCode, err := client.GetMakeCode(make)
+	if err != nil {
+		return "", fmt.Errorf("error getting make code: %v", err)
+	}
+
+	modelCode, err := client.GetModelCode(make, makeCode, model)
+	if err != nil {
+		return "", fmt.Errorf("error getting model code: %v", err)
+	}
+
+	currentYear := time.Now().Year()
+	var allResults strings.Builder
+
+	allResults.WriteString(fmt.Sprintf("Duty Search Results for %s %s\n", make, model))
+	allResults.WriteString(strings.Repeat("=", 60) + "\n\n")
+
+	for year := currentYear; year >= currentYear-9; year-- {
+		yearStr := strconv.Itoa(year)
+
+		startDate, endDate, err := parseAssessment("5y")
+		if err != nil {
+			continue
+		}
+
+		results, err := client.SearchVehicles(make, makeCode, model, modelCode, yearStr, startDate, endDate)
+		if err != nil {
+			fmt.Printf("Error searching for year %d: %v\n", year, err)
+			continue
+		}
+
+		if len(results) > 0 {
+			allResults.WriteString(fmt.Sprintf("Year %d - Found %d result(s):\n", year, len(results)))
+
+			for _, r := range results {
+				allResults.WriteString(fmt.Sprintf("  - Trim: %s, Exchange Rate: %s, Assessment Date: %s, Total Tax: %s\n",
+					r.TrimLevel, r.ExchangeRate, r.AssessmentDate, r.TotalTax))
+			}
+			allResults.WriteString("\n")
+		} else {
+			allResults.WriteString(fmt.Sprintf("Year %d - No data found\n", year))
+		}
+	}
+
+	return allResults.String(), nil
+}
+
+func generateAIResponse(ctx context.Context, client *genai.Client, originalQuery string, searchResults string) (string, error) {
+	prompt := fmt.Sprintf(`You are a helpful assistant analyzing vehicle duty rates in Ghana. 
+
+User Query: %s
+
+Search Results from external.unipassghana.com:
+-----
+%s
+-----
+
+Please provide a comprehensive response to the user's query based on the search results above. Include:
+1. A summary of the duty rates trends over the years
+2. Any notable patterns or changes in rates
+3. Specific information that directly answers the user's question
+4. Any relevant insights about exchange rates or total taxes
+
+Format your response in a clear, conversational manner that's easy to understand.`, originalQuery, searchResults)
+
+	parts := []*genai.Part{
+		{Text: prompt},
+	}
+
+	result, err := client.Models.GenerateContent(ctx, "gemini-2.5-pro", []*genai.Content{{Parts: parts}}, nil)
+	if err != nil {
+		return "", err
+	}
+
+	if len(result.Candidates) == 0 || len(result.Candidates[0].Content.Parts) == 0 {
+		return "", fmt.Errorf("no response from AI")
+	}
+
+	return result.Candidates[0].Content.Parts[0].Text, nil
 }
