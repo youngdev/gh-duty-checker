@@ -3,6 +3,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
@@ -11,8 +12,10 @@ import (
 	"net/url"
 	"os"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/PuerkitoBio/goquery"
@@ -59,8 +62,24 @@ type TaxItem struct {
 }
 type Client struct{ httpClient *http.Client }
 
+var (
+	selectCommonCodeRe = regexp.MustCompile(`selectCommonCode\('([^']*)'`)
+	goDetailRe         = regexp.MustCompile(`goDetail\('([^']*)', '([^']*)', '([^']*)', '([^']*)', '([^']*)'`)
+	mivGoPageRe        = regexp.MustCompile(`miv_goPage\('(\d+)'\)`)
+)
+
+const defaultPageSize = 10
+
 func NewClient() *Client {
-	return &Client{httpClient: &http.Client{Timeout: time.Second * 60}}
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.MaxIdleConns = 50
+	transport.MaxIdleConnsPerHost = 10
+	transport.IdleConnTimeout = 90 * time.Second
+
+	return &Client{httpClient: &http.Client{
+		Timeout:   time.Second * 60,
+		Transport: transport,
+	}}
 }
 
 func (c *Client) GetMakeCode(makeName string) (string, error) {
@@ -79,8 +98,7 @@ func (c *Client) GetMakeCode(makeName string) (string, error) {
 	doc.Find("table.g-table tbody tr").EachWithBreak(func(i int, s *goquery.Selection) bool {
 		if strings.EqualFold(strings.TrimSpace(s.Find("td:nth-child(3)").Text()), makeName) {
 			onclick, _ := s.Attr("onclick")
-			re := regexp.MustCompile(`selectCommonCode\('([^']*)'`)
-			matches := re.FindStringSubmatch(onclick)
+			matches := selectCommonCodeRe.FindStringSubmatch(onclick)
 			if len(matches) > 1 {
 				makeCode = matches[1]
 				found = true
@@ -112,8 +130,7 @@ func (c *Client) GetModelCode(makeName, makeCode, modelName string) (string, err
 		rowMake := strings.TrimSpace(s.Find("td:nth-child(5)").Text())
 		if strings.EqualFold(rowModel, modelName) && strings.EqualFold(rowMake, makeName) {
 			onclick, _ := s.Attr("onclick")
-			re := regexp.MustCompile(`selectCommonCode\('([^']*)'`)
-			matches := re.FindStringSubmatch(onclick)
+			matches := selectCommonCodeRe.FindStringSubmatch(onclick)
 			if len(matches) > 1 {
 				modelCode = matches[1]
 				found = true
@@ -129,68 +146,65 @@ func (c *Client) GetModelCode(makeName, makeCode, modelName string) (string, err
 }
 
 func (c *Client) SearchVehicles(makeName, makeCode, modelName, modelCode, year, startDate, endDate string) ([]VehicleResult, error) {
-	listOpJSON := `{"searchEndApprovalDate":null,"miv_pageNo":"1","searchChassisNo":null,"searchStartApprovalDate":null,"searchType":null,"miv_start_index":"0","searchMakeCd":null,"searchMakeNm":null,"searchManufactureYear":null,"miv_end_index":"10","searchModelTypeNm":null,"miv_sort":"","miv_pageSize":"10","searchModelTypeCd":null}`
-	encodedListOp := url.QueryEscape(url.QueryEscape(listOpJSON))
+	pageSize := defaultPageSize
 
-	orderedParams := []string{
-		"screenType=" + url.QueryEscape("S"),
-		"MENU_ID=" + url.QueryEscape("IIM01S03V02"),
-		"LISTOP=" + encodedListOp,
-		"searchType=" + url.QueryEscape("02"),
-		"searchChassisNo=" + url.QueryEscape(""),
-		"searchMakeCd=" + url.QueryEscape(makeCode),
-		"searchMakeNm=" + url.QueryEscape(makeName),
-		"searchModelTypeCd=" + url.QueryEscape(modelCode),
-		"searchModelTypeNm=" + url.QueryEscape(modelName),
-		"searchManufactureYear=" + url.QueryEscape(year),
-		"searchStartApprovalDate=" + url.QueryEscape(startDate),
-		"searchEndApprovalDate=" + url.QueryEscape(endDate),
-		"miv_pageNo=" + url.QueryEscape(""),
-		"miv_pageSize=" + url.QueryEscape("10"),
+	buildBody := func(pageNo int, encodedListOp string) string {
+		mivPageNoVal := ""
+		if pageNo > 1 {
+			mivPageNoVal = strconv.Itoa(pageNo)
+		}
+		orderedParams := []string{
+			"screenType=" + url.QueryEscape("S"),
+			"MENU_ID=" + url.QueryEscape("IIM01S03V02"),
+			"LISTOP=" + encodedListOp,
+			"searchType=" + url.QueryEscape("02"),
+			"searchChassisNo=" + url.QueryEscape(""),
+			"searchMakeCd=" + url.QueryEscape(makeCode),
+			"searchMakeNm=" + url.QueryEscape(makeName),
+			"searchModelTypeCd=" + url.QueryEscape(modelCode),
+			"searchModelTypeNm=" + url.QueryEscape(modelName),
+			"searchManufactureYear=" + url.QueryEscape(year),
+			"searchStartApprovalDate=" + url.QueryEscape(startDate),
+			"searchEndApprovalDate=" + url.QueryEscape(endDate),
+			"miv_pageNo=" + url.QueryEscape(mivPageNoVal),
+			"miv_pageSize=" + url.QueryEscape(strconv.Itoa(pageSize)),
+		}
+		return strings.Join(orderedParams, "&")
 	}
-	bodyString := strings.Join(orderedParams, "&")
+
+	encodedListOp, err := buildListOpEncoded(1, pageSize)
+	if err != nil {
+		return nil, err
+	}
+	bodyString := buildBody(1, encodedListOp)
 
 	doc, err := c.postFormAndGetDoc(usedVehicleSearchURL, nil, bodyString)
 	if err != nil {
 		return nil, err
 	}
 
-	var results []VehicleResult
-	detailRe := regexp.MustCompile(`goDetail\('([^']*)', '([^']*)', '([^']*)', '([^']*)', '([^']*)'`)
+	results := parseVehicleResults(doc)
+	maxPage := maxPageFromDoc(doc)
 
-	doc.Find("table[data-table='rwd'] tbody tr").Each(func(i int, s *goquery.Selection) {
-		if s.Find("td").Length() < 10 {
-			return
+	for pageNo := 2; pageNo <= maxPage; pageNo++ {
+		encodedListOp, err := buildListOpEncoded(pageNo, pageSize)
+		if err != nil {
+			return nil, err
 		}
-		if strings.Contains(s.Text(), "No data found") {
-			return
-		}
+		bodyString := buildBody(pageNo, encodedListOp)
 
-		href, _ := s.Find("td:nth-child(2) a").Attr("href")
-		detailMatches := detailRe.FindStringSubmatch(href)
-		if len(detailMatches) < 6 {
-			return
+		pageDoc, err := c.postFormAndGetDoc(usedVehicleSearchURL, nil, bodyString)
+		if err != nil {
+			return nil, err
 		}
 
-		results = append(results, VehicleResult{
-			No:             strings.TrimSpace(s.Find("td:nth-child(1)").Text()),
-			TrimLevel:      strings.TrimSpace(s.Find("td:nth-child(2)").Text()),
-			Year:           strings.TrimSpace(s.Find("td:nth-child(3)").Text()),
-			Make:           strings.TrimSpace(s.Find("td:nth-child(4)").Text()),
-			Model:          strings.TrimSpace(s.Find("td:nth-child(5)").Text()),
-			ExchangeRate:   strings.TrimSpace(s.Find("td:nth-child(10)").Text()),
-			ReceiptDate:    strings.TrimSpace(s.Find("td:nth-child(11)").Text()),
-			AssessmentDate: strings.TrimSpace(s.Find("td:nth-child(12)").Text()),
-			TotalTax:       strings.TrimSpace(s.Find("td:nth-child(14)").Text()),
-			DetailParams: DetailParams{
-				CustomsOfficeCd:  detailMatches[1],
-				DeclarationYear:  detailMatches[2],
-				DeclarationSeqNo: detailMatches[3],
-				AssessmentSeqNo:  detailMatches[4],
-				ItemNo:           detailMatches[5],
-			},
-		})
-	})
+		results = append(results, parseVehicleResults(pageDoc)...)
+
+		if p := maxPageFromDoc(pageDoc); p > maxPage {
+			maxPage = p
+		}
+	}
+
 	return results, nil
 }
 
@@ -309,10 +323,36 @@ func parseAssessment(durationStr string) (string, string, error) {
 }
 
 func displayVehicleList(results []VehicleResult) {
-	table := tablewriter.NewWriter(os.Stdout)
-	table.Header([]string{"Make", "Model", "Year", "Exchange Rate", "Receipt Date", "Assessment Date", "Total Tax"})
+	type vehicleWithReceipt struct {
+		v       VehicleResult
+		receipt time.Time
+		ok      bool
+	}
+
+	items := make([]vehicleWithReceipt, 0, len(results))
 	for _, r := range results {
-		table.Append([]string{r.Make, r.Model, r.Year, r.ExchangeRate, r.ReceiptDate, r.AssessmentDate, r.TotalTax})
+		t, err := time.Parse("02/01/2006", strings.TrimSpace(r.ReceiptDate))
+		items = append(items, vehicleWithReceipt{v: r, receipt: t, ok: err == nil})
+	}
+	sort.SliceStable(items, func(i, j int) bool {
+		di, dj := items[i], items[j]
+		switch {
+		case di.ok && dj.ok:
+			return di.receipt.After(dj.receipt)
+		case di.ok:
+			return true
+		case dj.ok:
+			return false
+		default:
+			return false
+		}
+	})
+
+	table := tablewriter.NewWriter(os.Stdout)
+	table.Header([]string{"No.", "Trim", "Make", "Model", "Year", "Exchange Rate", "Receipt Date", "Assessment Date", "Total Tax"})
+	for _, item := range items {
+		r := item.v
+		table.Append([]string{r.No, r.TrimLevel, r.Make, r.Model, r.Year, r.ExchangeRate, r.ReceiptDate, r.AssessmentDate, r.TotalTax})
 	}
 	table.Render()
 }
@@ -392,7 +432,7 @@ func main() {
 
 	if *taxListFlag {
 		fmt.Println("--- Tax Breakdown (Most Recent) ---")
-		mostRecent := results[0]
+		mostRecent := mostRecentVehicle(results)
 		fmt.Printf("Fetching tax details for %s %s (Trim: %s)...\n", mostRecent.Make, mostRecent.Model, mostRecent.TrimLevel)
 		taxItems, err := client.GetTaxDetails(mostRecent.DetailParams)
 		if err != nil {
@@ -502,15 +542,15 @@ MODEL: Camry`, query)
 	return make, model, nil
 }
 
-func performMultiYearSearch(make, model string) (string, error) {
+func performMultiYearSearch(makeName, modelName string) (string, error) {
 	client := NewClient()
 
-	makeCode, err := client.GetMakeCode(make)
+	makeCode, err := client.GetMakeCode(makeName)
 	if err != nil {
 		return "", fmt.Errorf("error getting make code: %v", err)
 	}
 
-	modelCode, err := client.GetModelCode(make, makeCode, model)
+	modelCode, err := client.GetModelCode(makeName, makeCode, modelName)
 	if err != nil {
 		return "", fmt.Errorf("error getting model code: %v", err)
 	}
@@ -518,29 +558,69 @@ func performMultiYearSearch(make, model string) (string, error) {
 	currentYear := time.Now().Year()
 	var allResults strings.Builder
 
-	allResults.WriteString(fmt.Sprintf("Duty Search Results for %s %s\n", make, model))
+	allResults.WriteString(fmt.Sprintf("Duty Search Results for %s %s\n", makeName, modelName))
 	allResults.WriteString(strings.Repeat("=", 60) + "\n\n")
 
+	type yearResult struct {
+		year    int
+		results []VehicleResult
+		err     error
+	}
+
+	jobs := make(chan int)
+	out := make(chan yearResult)
+
+	workerCount := 3
+	var wg sync.WaitGroup
+	for i := 0; i < workerCount; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for year := range jobs {
+				yearStr := strconv.Itoa(year)
+				startDate, endDate, err := parseAssessment("5y")
+				if err != nil {
+					out <- yearResult{year: year, err: err}
+					continue
+				}
+				results, err := client.SearchVehicles(makeName, makeCode, modelName, modelCode, yearStr, startDate, endDate)
+				out <- yearResult{year: year, results: results, err: err}
+			}
+		}()
+	}
+
+	go func() {
+		wg.Wait()
+		close(out)
+	}()
+
+	go func() {
+		for year := currentYear; year >= currentYear-9; year-- {
+			jobs <- year
+		}
+		close(jobs)
+	}()
+
+	resultByYear := make(map[int]yearResult)
+	for r := range out {
+		resultByYear[r.year] = r
+	}
+
 	for year := currentYear; year >= currentYear-9; year-- {
-		yearStr := strconv.Itoa(year)
-
-		startDate, endDate, err := parseAssessment("5y")
-		if err != nil {
+		r, ok := resultByYear[year]
+		if !ok {
+			allResults.WriteString(fmt.Sprintf("Year %d - No data found\n", year))
 			continue
 		}
-
-		results, err := client.SearchVehicles(make, makeCode, model, modelCode, yearStr, startDate, endDate)
-		if err != nil {
-			fmt.Printf("Error searching for year %d: %v\n", year, err)
+		if r.err != nil {
+			allResults.WriteString(fmt.Sprintf("Year %d - Error searching: %v\n", year, r.err))
 			continue
 		}
-
-		if len(results) > 0 {
-			allResults.WriteString(fmt.Sprintf("Year %d - Found %d result(s):\n", year, len(results)))
-
-			for _, r := range results {
+		if len(r.results) > 0 {
+			allResults.WriteString(fmt.Sprintf("Year %d - Found %d result(s):\n", year, len(r.results)))
+			for _, vr := range r.results {
 				allResults.WriteString(fmt.Sprintf("  - Trim: %s, Exchange Rate: %s, Assessment Date: %s, Total Tax: %s\n",
-					r.TrimLevel, r.ExchangeRate, r.AssessmentDate, r.TotalTax))
+					vr.TrimLevel, vr.ExchangeRate, vr.AssessmentDate, vr.TotalTax))
 			}
 			allResults.WriteString("\n")
 		} else {
@@ -583,4 +663,108 @@ Format your response in a clear, conversational manner that's easy to understand
 	}
 
 	return result.Candidates[0].Content.Parts[0].Text, nil
+}
+
+func buildListOpEncoded(pageNo int, pageSize int) (string, error) {
+	listOp := map[string]any{
+		"searchEndApprovalDate":   nil,
+		"miv_pageNo":              strconv.Itoa(pageNo),
+		"searchChassisNo":         nil,
+		"searchStartApprovalDate": nil,
+		"searchType":              nil,
+		"miv_start_index":         strconv.Itoa((pageNo - 1) * pageSize),
+		"searchMakeCd":            nil,
+		"searchMakeNm":            nil,
+		"searchManufactureYear":   nil,
+		"miv_end_index":           strconv.Itoa(pageNo * pageSize),
+		"searchModelTypeNm":       nil,
+		"miv_sort":                "",
+		"miv_pageSize":            strconv.Itoa(pageSize),
+		"searchModelTypeCd":       nil,
+	}
+	b, err := json.Marshal(listOp)
+	if err != nil {
+		return "", err
+	}
+	return url.QueryEscape(url.QueryEscape(string(b))), nil
+}
+
+func maxPageFromDoc(doc *goquery.Document) int {
+	maxPage := 1
+	doc.Find("a[href*=\"miv_goPage\"]").Each(func(i int, s *goquery.Selection) {
+		href, ok := s.Attr("href")
+		if !ok {
+			return
+		}
+		matches := mivGoPageRe.FindStringSubmatch(href)
+		if len(matches) != 2 {
+			return
+		}
+		if p, err := strconv.Atoi(matches[1]); err == nil && p > maxPage {
+			maxPage = p
+		}
+	})
+	return maxPage
+}
+
+func parseVehicleResults(doc *goquery.Document) []VehicleResult {
+	results := make([]VehicleResult, 0)
+
+	doc.Find("table[data-table='rwd'] tbody tr").Each(func(i int, s *goquery.Selection) {
+		if s.Find("td").Length() < 10 {
+			return
+		}
+		if strings.Contains(s.Text(), "No data found") {
+			return
+		}
+
+		href, _ := s.Find("td:nth-child(2) a").Attr("href")
+		detailMatches := goDetailRe.FindStringSubmatch(href)
+		if len(detailMatches) < 6 {
+			return
+		}
+
+		results = append(results, VehicleResult{
+			No:             strings.TrimSpace(s.Find("td:nth-child(1)").Text()),
+			TrimLevel:      strings.TrimSpace(s.Find("td:nth-child(2)").Text()),
+			Year:           strings.TrimSpace(s.Find("td:nth-child(3)").Text()),
+			Make:           strings.TrimSpace(s.Find("td:nth-child(4)").Text()),
+			Model:          strings.TrimSpace(s.Find("td:nth-child(5)").Text()),
+			ExchangeRate:   strings.TrimSpace(s.Find("td:nth-child(10)").Text()),
+			ReceiptDate:    strings.TrimSpace(s.Find("td:nth-child(11)").Text()),
+			AssessmentDate: strings.TrimSpace(s.Find("td:nth-child(12)").Text()),
+			TotalTax:       strings.TrimSpace(s.Find("td:nth-child(14)").Text()),
+			DetailParams: DetailParams{
+				CustomsOfficeCd:  detailMatches[1],
+				DeclarationYear:  detailMatches[2],
+				DeclarationSeqNo: detailMatches[3],
+				AssessmentSeqNo:  detailMatches[4],
+				ItemNo:           detailMatches[5],
+			},
+		})
+	})
+
+	return results
+}
+
+func mostRecentVehicle(results []VehicleResult) VehicleResult {
+	if len(results) == 0 {
+		return VehicleResult{}
+	}
+	mostRecent := results[0]
+	mostRecentDate, err := time.Parse("02/01/2006", strings.TrimSpace(mostRecent.AssessmentDate))
+	if err != nil {
+		return mostRecent
+	}
+	for _, r := range results[1:] {
+		d, err := time.Parse("02/01/2006", strings.TrimSpace(r.AssessmentDate))
+		if err != nil {
+			continue
+		}
+		if d.After(mostRecentDate) {
+			mostRecent = r
+			mostRecentDate = d
+		}
+	}
+	return mostRecent
 }
